@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"sort"
@@ -164,9 +165,11 @@ func printBar(percent float64, size int, lecture Lecture) {
 func retrieveLectures(cacheTTL int) ([]Lecture, error) {
 	cachedLectures, err := readCache()
 	if err != nil || isCacheOutdated(cachedLectures, cacheTTL) {
-		lectures, err := fetchLectures()
+		lectures, err := fetchLectures(apiEndpoint)
 		if err == nil {
-			writeCache(lectures)
+			if err := writeCache(lectures); err != nil {
+				return nil, err
+			}
 		}
 		return lectures, err
 	}
@@ -201,32 +204,46 @@ func writeCache(lectures []Lecture) error {
 	return os.WriteFile(cacheFile, fileData, 0o644)
 }
 
-func fetchLectures() ([]Lecture, error) {
-	resp, err := http.Get(apiEndpoint)
+func fetchLectures(url string) ([]Lecture, error) {
+	data, err := performGetRequest(url)
 	if err != nil {
-		return nil, &fetchError{"Failed to fetch from API endpoint."}
+		return nil, err
+	}
+
+	return filterAndParseLectures(data)
+}
+
+func performGetRequest(url string) ([]byte, error) {
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, &fetchError{"network request failed"}
 	}
 	defer resp.Body.Close()
 
+	return io.ReadAll(resp.Body)
+}
+
+func filterAndParseLectures(data []byte) ([]Lecture, error) {
 	var rawItems []json.RawMessage
-	if err := json.NewDecoder(resp.Body).Decode(&rawItems); err != nil {
-		return nil, &fetchError{"Failed to decode JSON array."}
+	if err := json.Unmarshal(data, &rawItems); err != nil {
+		return nil, &fetchError{"invalid json format"}
 	}
 
 	var lectures []Lecture
 	for _, item := range rawItems {
-		// Helper to extract only the type
-		var typeCheck struct {
-			EntityType string `json:"entityType"`
-		}
-
-		if err := json.Unmarshal(item, &typeCheck); err == nil && typeCheck.EntityType == "LECTURE" {
+		if isType(item, "LECTURE") {
 			var l Lecture
 			if err := json.Unmarshal(item, &l); err == nil {
 				lectures = append(lectures, l)
 			}
 		}
 	}
-
 	return lectures, nil
+}
+
+func isType(item json.RawMessage, typeName string) bool {
+	var meta struct {
+		EntityType string `json:"entityType"`
+	}
+	return json.Unmarshal(item, &meta) == nil && meta.EntityType == typeName
 }
