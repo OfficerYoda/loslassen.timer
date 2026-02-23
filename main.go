@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"sort"
@@ -205,19 +204,28 @@ func writeCache(lectures []Lecture) error {
 func fetchLectures() ([]Lecture, error) {
 	resp, err := http.Get(apiEndpoint)
 	if err != nil {
-		return []Lecture{}, &fetchError{"Failed to fetch from API endpoint."}
+		return nil, &fetchError{"Failed to fetch from API endpoint."}
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return []Lecture{}, &fetchError{"Failed to read API response."}
+	var rawItems []json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&rawItems); err != nil {
+		return nil, &fetchError{"Failed to decode JSON array."}
 	}
 
 	var lectures []Lecture
-	err = json.Unmarshal(body, &lectures)
-	if err != nil {
-		return []Lecture{}, &fetchError{"Failed to parse JSON."}
+	for _, item := range rawItems {
+		// Helper to extract only the type
+		var typeCheck struct {
+			EntityType string `json:"entityType"`
+		}
+
+		if err := json.Unmarshal(item, &typeCheck); err == nil && typeCheck.EntityType == "LECTURE" {
+			var l Lecture
+			if err := json.Unmarshal(item, &l); err == nil {
+				lectures = append(lectures, l)
+			}
+		}
 	}
 
 	return lectures, nil
